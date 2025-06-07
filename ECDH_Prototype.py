@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 ECDH Multi-Client Chat (server & client with GUI)
 
