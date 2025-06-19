@@ -1,4 +1,4 @@
-# ECDH Chat Prototype
+# ECDH Key Exchange Chat Prototype
 
 A basic Python prototype for secure messaging using Elliptic Curve Diffie-Hellman (ECDH) key exchange. Clients communicate through a central server, establishing unique symmetric keys for encrypted peer-to-peer messaging using [Fernet](https://github.com/pyca/cryptography/).
 
@@ -42,7 +42,7 @@ For example:
 ```bat
 run_instances.bat 5
 ```
-This opens 5 separate CMD windows, each running the GUI client.
+This opens 5 separate CMD windows, The first one is running a server and the rest will be clients.
 
 ## Messaging
 
