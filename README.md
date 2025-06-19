@@ -1,102 +1,71 @@
-# ECDH_Prototype
+# ECDH Chat Prototype
 
-A simple Python-based prototype demonstrating secure peer-to-peer messaging using Elliptic-Curve Diffie-Hellman (ECDH) for key exchange and Fernet for symmetric encryption. The project includes a headless relay server and a Tkinter GUI client that can automatically decide its role based on network availability.
-
----
+A basic Python prototype for secure messaging using Elliptic Curve Diffie-Hellman (ECDH) key exchange. Clients communicate through a central server, establishing unique symmetric keys for encrypted peer-to-peer messaging using [Fernet](https://github.com/pyca/cryptography/).
 
 ## Features
 
-- **Automatic Role Detection**: The first instance on the network becomes the relay server; subsequent clients connect to it automatically.
-- **ECDH Key Exchange**: Uses the SECP256R1 curve to establish a shared secret between peers.
-- **HKDF-Based Key Derivation**: Derives a URL-safe, Base64-encoded key for Fernet encryption.
-- **Fernet Encryption**: Ensures confidentiality of all messages exchanged between clients.
-- **Authentication and Rate Limiting**: Simple token-based auth with configurable rate limits to prevent abuse.
-- **Unit and Integration Tests**: Cover key generation, shared-secret validation, encryption round-trips, authentication flow, and rate-limiting logic.
+- Multi-client communication via a central server  
+- ECDH key exchange (SECP256R1 curve)  
+- Symmetric encryption with Fernet  
+- Basic Tkinter GUI per client  
+- Automatic headless server startup if none is running  
 
----
+## How to Run
 
-## Getting Started
+### Option 1: Manual Terminal Launch
 
-### Prerequisites
+1. **Navigate to the project folder**  
+   Open a terminal in that directory (e.g., click the path bar, type `cmd`, and press Enter).
 
-- Python 3.8 or later
-- [`cryptography`](https://pypi.org/project/cryptography/) library
-
-### Installation
-
-1. Clone the repository:
+2. **Start the server**  
    ```bash
-   git clone https://github.com/YakovSSH/ECDH_Prototype.git
-   cd ECDH_Prototype
+   py ECDH_Prototype.py
    ```
+   This will start the server if no other instance is running.
 
-2. Install dependencies:
+3. **Start clients**  
+   In additional terminal windows, run:
    ```bash
-   pip install cryptography
+   py ECDH_Prototype.py
    ```
+   This launches GUI clients that connect to the server.
 
----
+### Option 2: Auto-launch Multiple Clients
 
-## Usage
+Use the provided batch script to launch several client windows at once:
 
-Run the main script on each machine (or in separate terminals) on the same local network:
+```bat
+run_instances.bat <number_of_windows>
+```
+
+For example:
+```bat
+run_instances.bat 5
+```
+This opens 5 separate CMD windows, each running the GUI client.
+
+## Messaging
+
+1. Select a peer from the **Peers** list.  
+2. Click **Key Exch** to perform an ECDH key exchange.  
+3. Type a message and click **Send**.  
+4. Messages are encrypted with a unique key derived from the ECDH shared secret.
+
+## Requirements
+
+Install dependencies with:
 
 ```bash
-python ecdh_chat.py
+pip install cryptography
 ```
 
-- If this instance cannot connect to an existing server, it starts in server (relay) mode.
-- Clients automatically discover and connect to the relay server.
-- Peer-to-peer encrypted chat sessions begin once two clients exchange public keys.
+## Notes
 
----
-
-## Project Structure
-
-```
-ECDH_Prototype/
-├── ecdh_chat.py      # Main server/client application
-├── ECDH_Prototype/   # Library code for key handling and auth
-│   ├── __init__.py
-│   ├── helpers.py    # Key generation and derivation functions
-│   ├── server.py     # Relay server logic
-│   └── client.py     # Client GUI and networking
-├── tests/            # Pytest-based test suite
-│   ├── test_ecdh_helpers.py
-│   └── test_server_auth_rate.py
-└── README.md         # This file
-```
-
----
-
-## Running Tests
-
-Use `pytest` to run all unit and integration tests:
-
-```bash
-pytest
-```
-
-
----
-
-## Configuration
-
-- **RATE_LIMIT** and **RATE_WINDOW** in `server.py` control how many messages a client can send in a given time window.
-- **AUTH_TOKEN** in `helpers.py` is used for simple connection authentication.
-
-
----
-
-## Future Work
-
-- Add peer discovery and NAT traversal for wider network support.
-- Introduce persistent storage for message history.
-- Replace the simple token auth with mutual certificate validation.
-- Implement group chats with separate key exchanges for each participant.
-
----
+- Each client uses its own ECDH key pair.  
+- Key exchanges are relayed via the server but executed peer-to-peer.  
+- Messages use Fernet encryption for confidentiality and integrity.  
+- The server runs headless; clients display a GUI.
 
 ## License
 
-Distributed under the MIT License. See `LICENSE` for more details.
+MIT License
