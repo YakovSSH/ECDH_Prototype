@@ -42,7 +42,7 @@ For example:
 ```bat
 run_instances.bat 5
 ```
-This opens 5 separate CMD windows, each running the GUI client.
+This opens 5 separate CMD windows, 1 will run the server and the rest will be clients.
 
 ## Messaging
 
