@@ -94,9 +94,6 @@ clients_lock = threading.Lock()
 next_id = 1                # Client ID counter
 
 def broadcast_user_list():
-    """
-    Notify all connected clients of the current list of client IDs.
-    """
     with clients_lock:
         user_list = list(clients.keys())
     packet = pickle.dumps({"type": "user_list", "users": user_list})
@@ -108,14 +105,10 @@ def broadcast_user_list():
                 pass
 
 def handle_client(conn, addr, client_id):
-    """
-    Handle incoming messages from a single client, relaying key exchanges and encrypted messages.
-    """
     global clients
     print(f"[SERVER] Client {client_id} connected from {addr}")
     with clients_lock:
         clients[client_id] = (conn, addr)
-    # Send welcome containing assigned ID and current users
     conn.sendall(pickle.dumps({"type": "welcome", "your_id": client_id, "users": list(clients.keys())}))
     broadcast_user_list()
     try:
@@ -140,9 +133,6 @@ def handle_client(conn, addr, client_id):
         print(f"[SERVER] Client {client_id} disconnected")
 
 def run_server():
-    """
-    Start the headless relay server on the configured PORT.
-    """
     global next_id
     print(f"[SERVER] Starting on port {PORT}")
     server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -171,9 +161,6 @@ sock = None
 queue_events = queue.Queue()
 
 def network_listener(sock):
-    """
-    Background thread listening to server messages and enqueueing GUI events.
-    """
     global client_id
     while True:
         data = sock.recv(BUFFER_SIZE)
@@ -192,7 +179,6 @@ def network_listener(sock):
             shared_secret = priv.exchange(ec.ECDH(), their_pub)
             shared[sender] = shared_secret
             queue_events.put(("key_ok", sender))
-            # Respond with our public key if needed
             if sender not in sent_keys:
                 sock.sendall(pickle.dumps({
                     "type": "key_exchange",
@@ -211,9 +197,6 @@ def network_listener(sock):
     queue_events.put(("disconnect", None))
 
 def start_gui():
-    """
-    Initialize keys, connect to server, and launch the Tkinter GUI loop.
-    """
     global priv, pub_bytes, sock
     priv = generate_key_pair()
     pub_bytes = serialize_public_key(priv.public_key())
@@ -223,9 +206,9 @@ def start_gui():
     sock.connect(('localhost', PORT))
     threading.Thread(target=network_listener, args=(sock,), daemon=True).start()
 
-    # Build GUI layout
+    # Build GUI
     root = tk.Tk()
-    root.title("ECDH Chat")
+    root.title("ECDH Chat")  # Will append user ID once received
 
     left = tk.Frame(root)
     left.pack(side=tk.LEFT, fill=tk.Y)
@@ -248,9 +231,6 @@ def start_gui():
     btn_key.pack(side=tk.RIGHT)
 
     def on_select(event=None):
-        """
-        Update button states based on selected peer and whether a shared key exists.
-        """
         sel = lb.curselection()
         if not sel:
             btn_key.config(state=tk.DISABLED)
@@ -263,17 +243,13 @@ def start_gui():
     lb.bind('<<ListboxSelect>>', on_select)
 
     def on_send():
-        """
-        Encrypt and send a non-empty message to the selected peer.
-        """
         sel = lb.curselection()
         if not sel:
             return
         peer = lb.get(sel[0])
         msg = entry.get().strip()
-        # Prevent sending empty messages
         if not msg:
-            messagebox.showwarning("Warning", "Please write something!")
+            messagebox.showwarning("Warning", "Cannot send empty message.")
             return
         entry.delete(0, tk.END)
         token = Fernet(derive_fernet_key(shared[peer])).encrypt(msg.encode())
@@ -288,9 +264,6 @@ def start_gui():
         txt.config(state='disabled')
 
     def on_key():
-        """
-        Initiate ECDH key exchange with the chosen peer, if not already done.
-        """
         sel = lb.curselection()
         if not sel:
             return
@@ -309,17 +282,15 @@ def start_gui():
 
     btn_send.config(command=on_send)
     btn_key.config(command=on_key)
-    # Both buttons start disabled until a peer is selected
     btn_send.config(state=tk.DISABLED)
     btn_key.config(state=tk.DISABLED)
 
     def poll():
-        """
-        Poll the event queue for updates from the listener thread and update the GUI.
-        """
         while not queue_events.empty():
             ev = queue_events.get()
             if ev[0] == 'welcome':
+                # Set window title to include assigned user ID
+                root.title(f"ECDH Chat - {client_id}")
                 for p in ev[1]:
                     if p != client_id:
                         peers.append(p)
@@ -347,7 +318,6 @@ def start_gui():
                 root.quit()
         root.after(100, poll)
 
-    # Start polling and enter main loop
     root.after(100, poll)
     root.mainloop()
 
