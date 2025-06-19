@@ -1,21 +1,15 @@
 #!/usr/bin/env python3
 """
-ECDH Multi-Client Chat (server & client with GUI)
+ECDH Multi-Client Chat (server & client with GUI) with rate limiting and simple authentication handshake
 
 Run this script on each machine. It automatically tries to connect
 on localhost:65432; if that fails, it starts as the server (headless).
 
 Usage:
-    python ecdh_chat.py
+    python ecdh_chat_secure.py
 
 Dependencies:
     pip install cryptography
-
-This script implements:
- - A headless server that relays ECDH key exchanges and encrypted messages between clients
- - A Tkinter-based GUI client for peer-to-peer secure messaging
- - ECDH key exchange using the SECP256R1 curve
- - Symmetric encryption/decryption via Fernet, with keys derived from the ECDH shared secret
 """
 import socket
 import threading
@@ -23,8 +17,9 @@ import pickle
 import base64
 import sys
 import queue
+import time
 import tkinter as tk
-from tkinter import scrolledtext, messagebox
+from tkinter import scrolledtext, messagebox, simpledialog
 
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives import serialization, hashes
@@ -34,26 +29,17 @@ from cryptography.fernet import Fernet
 # ────── Configuration ─────────────────────────────────────────
 PORT = 65432                # Port for server and client communication
 BUFFER_SIZE = 4096          # Socket buffer size in bytes
+AUTH_TOKEN = b"supersecret"  # Shared secret for simple authentication handshake
+RATE_LIMIT = 20             # max messages per window
+RATE_WINDOW = 1.0           # window size in seconds
 
 # ────── Crypto Helpers ─────────────────────────────────────────
 
 def generate_key_pair():
-    """
-    Generate an ECDH private key using the SECP256R1 curve.
-    Returns:
-        EllipticCurvePrivateKey: Newly generated private key.
-    """
     return ec.generate_private_key(ec.SECP256R1())
 
 
 def serialize_public_key(pub):
-    """
-    Serialize an EC public key to DER format bytes for network transmission.
-    Args:
-        pub (EllipticCurvePublicKey): Public key to serialize.
-    Returns:
-        bytes: DER-encoded public key bytes.
-    """
     return pub.public_bytes(
         encoding=serialization.Encoding.DER,
         format=serialization.PublicFormat.SubjectPublicKeyInfo
@@ -61,24 +47,10 @@ def serialize_public_key(pub):
 
 
 def load_public_key(data):
-    """
-    Deserialize DER-encoded public key bytes back into an EC public key.
-    Args:
-        data (bytes): DER-encoded key bytes received over the network.
-    Returns:
-        EllipticCurvePublicKey: Reconstructed public key object.
-    """
     return serialization.load_der_public_key(data)
 
 
 def derive_fernet_key(shared_secret):
-    """
-    Derive a Fernet-compatible symmetric key from an ECDH shared secret.
-    Args:
-        shared_secret (bytes): Raw output from ECDH key exchange.
-    Returns:
-        bytes: URL-safe base64-encoded 32-byte key for Fernet.
-    """
     hkdf = HKDF(
         algorithm=hashes.SHA256(),
         length=32,
@@ -93,6 +65,7 @@ clients = {}               # Map client_id -> (conn, addr)
 clients_lock = threading.Lock()
 next_id = 1                # Client ID counter
 
+
 def broadcast_user_list():
     with clients_lock:
         user_list = list(clients.keys())
@@ -104,18 +77,64 @@ def broadcast_user_list():
             except Exception:
                 pass
 
+
+def _do_auth(conn, client_id):
+    """
+    Perform the initial auth handshake on the server side.
+    Returns True if the token matches AUTH_TOKEN, False otherwise.
+    """
+    try:
+        data = conn.recv(BUFFER_SIZE)
+        msg = pickle.loads(data)
+        if msg.get("type") != "auth" or msg.get("token") != AUTH_TOKEN:
+            print(f"[SERVER] Auth failed for {client_id}")
+            conn.close()
+            return False
+    except Exception:
+        conn.close()
+        return False
+
+    # If we get here, auth succeeded
+    print(f"[SERVER] Client {client_id} connected")
+    return True
+
 def handle_client(conn, addr, client_id):
-    global clients
     print(f"[SERVER] Client {client_id} connected from {addr}")
+    # Authentication handshake
+    try:
+        data = conn.recv(BUFFER_SIZE)
+        msg = pickle.loads(data)
+        if msg.get("type") != "auth" or msg.get("token") != AUTH_TOKEN:
+            print(f"[SERVER] Auth failed for {addr}")
+            conn.close()
+            return
+    except Exception:
+        conn.close()
+        return
+
     with clients_lock:
         clients[client_id] = (conn, addr)
     conn.sendall(pickle.dumps({"type": "welcome", "your_id": client_id, "users": list(clients.keys())}))
     broadcast_user_list()
+
+    window_start = time.time()
+    msg_count = 0
+
     try:
         while True:
+            now = time.time()
+            if now - window_start > RATE_WINDOW:
+                window_start = now
+                msg_count = 0
+
             data = conn.recv(BUFFER_SIZE)
             if not data:
                 break
+
+            msg_count += 1
+            if msg_count > RATE_LIMIT:
+                continue
+
             msg = pickle.loads(data)
             msg_type = msg.get("type")
             target = msg.get("to")
@@ -123,6 +142,7 @@ def handle_client(conn, addr, client_id):
                 with clients_lock:
                     if target in clients:
                         clients[target][0].sendall(data)
+
     except Exception:
         pass
     finally:
@@ -131,6 +151,7 @@ def handle_client(conn, addr, client_id):
         broadcast_user_list()
         conn.close()
         print(f"[SERVER] Client {client_id} disconnected")
+
 
 def run_server():
     global next_id
@@ -153,12 +174,13 @@ def run_server():
 # ────── Client GUI ──────────────────────────────────────────────
 client_id = None
 peers = []
-shared = {}          # Map peer_id -> shared_secret bytes
-sent_keys = set()    # Peers we have sent our public key to
+shared = {}
+sent_keys = set()
 priv = None
 pub_bytes = None
 sock = None
 queue_events = queue.Queue()
+
 
 def network_listener(sock):
     global client_id
@@ -167,15 +189,15 @@ def network_listener(sock):
         if not data:
             break
         msg = pickle.loads(data)
-        msg_type = msg.get("type")
-        if msg_type == "welcome":
-            client_id = msg["your_id"]
-            queue_events.put(("welcome", msg["users"]))
-        elif msg_type == "user_list":
-            queue_events.put(("user_list", msg["users"]))
-        elif msg_type == "key_exchange":
-            sender = msg["from"]
-            their_pub = load_public_key(msg["pub_bytes"])
+        mtype = msg.get("type")
+        if mtype == "welcome":
+            client_id = msg.get("your_id")
+            queue_events.put(("welcome", msg.get("users")))
+        elif mtype == "user_list":
+            queue_events.put(("user_list", msg.get("users")))
+        elif mtype == "key_exchange":
+            sender = msg.get("from")
+            their_pub = load_public_key(msg.get("pub_bytes"))
             shared_secret = priv.exchange(ec.ECDH(), their_pub)
             shared[sender] = shared_secret
             queue_events.put(("key_ok", sender))
@@ -187,41 +209,51 @@ def network_listener(sock):
                     "pub_bytes": pub_bytes
                 }))
                 sent_keys.add(sender)
-        elif msg_type == "secure_message":
-            sender = msg["from"]
-            token = msg["token"]
+        elif mtype == "secure_message":
+            sender = msg.get("from")
+            token = msg.get("token")
             if sender in shared:
                 fkey = derive_fernet_key(shared[sender])
                 plaintext = Fernet(fkey).decrypt(token).decode()
                 queue_events.put(("msg", sender, plaintext))
     queue_events.put(("disconnect", None))
 
+
 def start_gui():
     global priv, pub_bytes, sock
+    # Prompt for auth token
+    root = tk.Tk()
+    root.withdraw()
+    token = simpledialog.askstring("Auth", "Enter shared auth token:", show="*")
+    if token is None:
+        sys.exit(0)
+    token = token.encode()
+    root.destroy()
+
     priv = generate_key_pair()
     pub_bytes = serialize_public_key(priv.public_key())
 
-    # Connect to server
     sock = socket.socket()
     sock.connect(('localhost', PORT))
+    sock.sendall(pickle.dumps({"type": "auth", "token": token}))
     threading.Thread(target=network_listener, args=(sock,), daemon=True).start()
 
     # Build GUI
-    root = tk.Tk()
-    root.title("ECDH Chat")  # Will append user ID once received
+    gui = tk.Tk()
+    gui.title("ECDH Chat")
 
-    left = tk.Frame(root)
+    left = tk.Frame(gui)
     left.pack(side=tk.LEFT, fill=tk.Y)
     tk.Label(left, text="Peers").pack()
     lb = tk.Listbox(left)
     lb.pack(fill=tk.Y, expand=True)
 
-    mid = tk.Frame(root)
+    mid = tk.Frame(gui)
     mid.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
     txt = scrolledtext.ScrolledText(mid, state='disabled')
     txt.pack(fill=tk.BOTH, expand=True)
 
-    bot = tk.Frame(root)
+    bot = tk.Frame(gui)
     bot.pack(side=tk.BOTTOM, fill=tk.X)
     entry = tk.Entry(bot)
     entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
@@ -253,12 +285,7 @@ def start_gui():
             return
         entry.delete(0, tk.END)
         token = Fernet(derive_fernet_key(shared[peer])).encrypt(msg.encode())
-        sock.sendall(pickle.dumps({
-            "type": "secure_message",
-            "from": client_id,
-            "to": peer,
-            "token": token
-        }))
+        sock.sendall(pickle.dumps({"type": "secure_message", "from": client_id, "to": peer, "token": token}))
         txt.config(state='normal')
         txt.insert(tk.END, f"Sent to {peer}: {msg}\n")
         txt.config(state='disabled')
@@ -272,12 +299,7 @@ def start_gui():
             messagebox.showinfo("Info", f"Key already established with {peer}.")
             on_select()
             return
-        sock.sendall(pickle.dumps({
-            "type": "key_exchange",
-            "from": client_id,
-            "to": peer,
-            "pub_bytes": pub_bytes
-        }))
+        sock.sendall(pickle.dumps({"type": "key_exchange", "from": client_id, "to": peer, "pub_bytes": pub_bytes}))
         sent_keys.add(peer)
 
     btn_send.config(command=on_send)
@@ -289,18 +311,15 @@ def start_gui():
         while not queue_events.empty():
             ev = queue_events.get()
             if ev[0] == 'welcome':
-                # Set window title to include assigned user ID
-                root.title(f"ECDH Chat - {client_id}")
                 for p in ev[1]:
                     if p != client_id:
-                        peers.append(p)
                         lb.insert(tk.END, p)
+                gui.title(f"ECDH Chat - {client_id}")
             elif ev[0] == 'user_list':
-                nl = [u for u in ev[1] if u != client_id]
-                peers[:] = nl
                 lb.delete(0, tk.END)
-                for p in nl:
-                    lb.insert(tk.END, p)
+                for p in ev[1]:
+                    if p != client_id:
+                        lb.insert(tk.END, p)
             elif ev[0] == 'key_ok':
                 peer = ev[1]
                 key = derive_fernet_key(shared[peer]).decode()
@@ -309,17 +328,17 @@ def start_gui():
                 txt.config(state='disabled')
                 on_select()
             elif ev[0] == 'msg':
-                sender, plaintext = ev[1], ev[2]
+                _, sender, plaintext = ev
                 txt.config(state='normal')
                 txt.insert(tk.END, f"Received from {sender}: {plaintext}\n")
                 txt.config(state='disabled')
             elif ev[0] == 'disconnect':
                 messagebox.showinfo("Disconnected", "Server closed the connection.")
-                root.quit()
-        root.after(100, poll)
+                gui.quit()
+        gui.after(100, poll)
 
-    root.after(100, poll)
-    root.mainloop()
+    gui.after(100, poll)
+    gui.mainloop()
 
 if __name__ == '__main__':
     try:
